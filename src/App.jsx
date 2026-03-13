@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect, Fragment } from "react";
+import React, { useState, useCallback, useRef, Fragment } from "react";
 import * as XLSX from "xlsx";
 
 // ─── Simple CSV Parser (replaces PapaParse) ────────────────────────────────
@@ -365,7 +365,7 @@ function autoMapColumns(headers) {
 
 // ─── Styling ────────────────────────────────────────────────────────────────
 
-const FONT_LINK = "https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap";
+// Fonts are self-hosted via @fontsource (imported in main.jsx)
 
 // ─── Main App ───────────────────────────────────────────────────────────────
 
@@ -403,14 +403,6 @@ export default function SEPAXMLGenerator() {
   const [dragOver, setDragOver] = useState(false);
   const [showModal, setShowModal] = useState(null);
   const fileInputRef = useRef(null);
-
-  // Load Google Fonts
-  useEffect(() => {
-    const link = document.createElement("link");
-    link.rel = "stylesheet";
-    link.href = FONT_LINK;
-    document.head.appendChild(link);
-  }, []);
 
   // ── File Parsing ──
 
@@ -1159,7 +1151,9 @@ export default function SEPAXMLGenerator() {
           if (e.dataTransfer.files[0]) parseFile(e.dataTransfer.files[0]);
         }}
       >
-        <div className="dropzone-icon">📁</div>
+        <div className="dropzone-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
+            </div>
         <h3>Datei hierher ziehen oder klicken</h3>
         <p>.csv, .xlsx, .xls — UTF-8 empfohlen für Umlaute</p>
       </div>
@@ -1237,7 +1231,7 @@ export default function SEPAXMLGenerator() {
               ))}
             </select>
             <div className="mapping-status">
-              {columnMapping[field.key] ? "✅" : field.required ? "❌" : "➖"}
+              {columnMapping[field.key] ? "✓" : field.required ? "✗" : "–"}
             </div>
           </div>
         ))}
@@ -1523,7 +1517,7 @@ export default function SEPAXMLGenerator() {
 
     return (
       <div className="card" style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 48, marginBottom: 12 }}>✅</div>
+        <div style={{ fontSize: 48, marginBottom: 12, color: "var(--success)" }}>✓</div>
         <div className="card-title" style={{ marginBottom: 4 }}>{typeLabel}-XML erstellt</div>
         <div className="card-desc" style={{ marginBottom: 24 }}>
           {entries.length} Transaktionen · {totalAmount.toLocaleString("de-DE", { minimumFractionDigits: 2 })} € · Schema {schemaLabel}
@@ -1560,7 +1554,7 @@ export default function SEPAXMLGenerator() {
       <div className="app">
         <div className="header">
           <div className="header-badge">
-            <span>🏛</span> Für Vereine & Organisationen
+            Für Vereine & Organisationen
           </div>
           <h1>SEPA XML Generator</h1>
           <p>
@@ -1579,7 +1573,7 @@ export default function SEPAXMLGenerator() {
 
         <div className="privacy-note">
           <p>
-            <strong>🔒 Datenschutz:</strong> Alle Daten werden ausschließlich in Ihrem Browser verarbeitet. 
+            <strong>Datenschutz:</strong> Alle Daten werden ausschließlich in Ihrem Browser verarbeitet. 
             Es werden keine Daten an einen Server übertragen. Die Verarbeitung erfolgt vollständig lokal.
           </p>
         </div>
@@ -1679,7 +1673,15 @@ export default function SEPAXMLGenerator() {
                   oder sonstige Dienste eingebunden, die personenbezogene Daten erheben.
                 </p>
 
-                <h3>6. Ihre Rechte</h3>
+                <h3>6. Schriftarten</h3>
+                <p>
+                  Diese Webseite verwendet selbst gehostete Schriftarten (DM Sans, JetBrains Mono). 
+                  Die Schriftdateien werden direkt von unserem Server geladen. Es findet <strong>keine 
+                  Verbindung zu Google Fonts oder anderen externen Schriftarten-Diensten</strong> statt. 
+                  Ihre IP-Adresse wird nicht an Dritte übermittelt.
+                </p>
+
+                <h3>7. Ihre Rechte</h3>
                 <p>
                   Da wir keine personenbezogenen Daten speichern oder verarbeiten (abgesehen von den 
                   technisch notwendigen Verbindungsdaten beim Seitenaufruf durch den Hoster), entfallen 
@@ -1691,7 +1693,7 @@ export default function SEPAXMLGenerator() {
                   wenn Sie der Ansicht sind, dass die Verarbeitung Ihrer Daten gegen die DSGVO verstößt.
                 </p>
 
-                <h3>7. Änderungen</h3>
+                <h3>8. Änderungen</h3>
                 <p>
                   Wir behalten uns vor, diese Datenschutzerklärung anzupassen, um sie an geänderte 
                   Rechtslagen oder Änderungen der Webseite anzupassen. Es gilt die jeweils aktuelle 

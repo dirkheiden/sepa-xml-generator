@@ -6,18 +6,17 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "npm run build && wrangler dev",
-    "deploy": "npm run build && wrangler deploy"
+    "preview": "vite preview"
   },
   "dependencies": {
+    "@fontsource/dm-sans": "^5.1.1",
+    "@fontsource/jetbrains-mono": "^5.1.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "^1.27.0",
     "@vitejs/plugin-react": "^4.3.4",
-    "vite": "^6.0.0",
-    "wrangler": "^4.72.0"
+    "vite": "^6.0.0"
   }
 }
