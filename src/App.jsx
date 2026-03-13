@@ -1,338 +1,10 @@
 import React, { useState, useCallback, useRef, Fragment } from "react";
 import * as XLSX from "xlsx";
-
-// ─── Simple CSV Parser (replaces PapaParse) ────────────────────────────────
-
-function parseCSV(text) {
-  const lines = text.split(/\r?\n/).filter((l) => l.trim());
-  if (lines.length === 0) return { fields: [], data: [] };
-
-  // Detect delimiter
-  const firstLine = lines[0];
-  const semicolons = (firstLine.match(/;/g) || []).length;
-  const commas = (firstLine.match(/,/g) || []).length;
-  const tabs = (firstLine.match(/\t/g) || []).length;
-  const delimiter = tabs > semicolons && tabs > commas ? "\t" : semicolons > commas ? ";" : ",";
-
-  function splitRow(line) {
-    const result = [];
-    let current = "";
-    let inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (inQuotes) {
-        if (ch === '"' && line[i + 1] === '"') {
-          current += '"';
-          i++;
-        } else if (ch === '"') {
-          inQuotes = false;
-        } else {
-          current += ch;
-        }
-      } else {
-        if (ch === '"') {
-          inQuotes = true;
-        } else if (ch === delimiter) {
-          result.push(current.trim());
-          current = "";
-        } else {
-          current += ch;
-        }
-      }
-    }
-    result.push(current.trim());
-    return result;
-  }
-
-  const fields = splitRow(lines[0]);
-  const data = [];
-  for (let i = 1; i < lines.length; i++) {
-    const vals = splitRow(lines[i]);
-    if (vals.every((v) => !v)) continue; // skip empty rows
-    const row = {};
-    fields.forEach((f, j) => {
-      row[f] = vals[j] || "";
-    });
-    data.push(row);
-  }
-  return { fields, data };
-}
-
-// ─── IBAN / BIC Utilities ───────────────────────────────────────────────────
-
-function cleanIBAN(iban) {
-  return (iban || "").replace(/\s+/g, "").toUpperCase();
-}
-
-function validateIBAN(iban) {
-  const clean = cleanIBAN(iban);
-  if (!/^[A-Z]{2}\d{2}[A-Z0-9]{4,30}$/.test(clean)) return false;
-  const rearranged = clean.slice(4) + clean.slice(0, 4);
-  const numStr = rearranged
-    .split("")
-    .map((c) => (c >= "A" && c <= "Z" ? (c.charCodeAt(0) - 55).toString() : c))
-    .join("");
-  let remainder = numStr;
-  while (remainder.length > 2) {
-    const block = remainder.slice(0, 9);
-    remainder = (parseInt(block, 10) % 97).toString() + remainder.slice(block.length);
-  }
-  return parseInt(remainder, 10) % 97 === 1;
-}
-
-function deriveBIC(iban) {
-  // Simplified BIC derivation for German IBANs based on Bankleitzahl
-  // In production, you'd use a full BLZ→BIC mapping
-  const clean = cleanIBAN(iban);
-  if (!clean.startsWith("DE")) return "";
-  return ""; // User must provide BIC
-}
-
-function formatIBAN(iban) {
-  const clean = cleanIBAN(iban);
-  return clean.replace(/(.{4})/g, "$1 ").trim();
-}
-
-function validateBIC(bic) {
-  const clean = (bic || "").replace(/\s+/g, "").toUpperCase();
-  return /^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$/.test(clean);
-}
-
-function escapeXml(str) {
-  return String(str || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
-function formatAmount(val) {
-  const num = typeof val === "number" ? val : parseFloat(String(val).replace(",", "."));
-  if (isNaN(num) || num <= 0) return null;
-  return num.toFixed(2);
-}
-
-function generateMsgId() {
-  const now = new Date();
-  const ts = now.toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
-  const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
-  return `MSG${ts}${rand}`;
-}
-
-function generatePmtInfId() {
-  const rand = Math.random().toString(36).slice(2, 10).toUpperCase();
-  return `PMT${rand}`;
-}
-
-function formatDateISO(date) {
-  return date.toISOString().split("T")[0];
-}
-
-function formatDateTime(date) {
-  return date.toISOString().replace(/\.\d{3}Z$/, "");
-}
-
-// ─── SEPA XML Generation (pain.008.001.02 – Direct Debit) ──────────────────
-
-function generateSEPAXML(entries, config) {
-  const msgId = generateMsgId();
-  const pmtInfId = generatePmtInfId();
-  const creDtTm = formatDateTime(new Date());
-  const nbOfTxs = entries.length;
-  const ctrlSum = entries.reduce((sum, e) => sum + parseFloat(e.amount), 0).toFixed(2);
-  const reqdColltnDt = config.collectionDate || formatDateISO(new Date(Date.now() + 5 * 86400000));
-
-  const seqTp = config.sequenceType || "RCUR"; // FRST, RCUR, OOFF, FNAL
-  const lcl = config.localInstrument || "CORE"; // CORE, COR1, B2B
-
-  let xml = `<?xml version="1.0" encoding="UTF-8"?>
-<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.008.001.02"
-          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-          xsi:schemaLocation="urn:iso:std:iso:20022:tech:xsd:pain.008.001.02 pain.008.001.02.xsd">
-  <CstmrDrctDbtInitn>
-    <GrpHdr>
-      <MsgId>${escapeXml(msgId)}</MsgId>
-      <CreDtTm>${creDtTm}</CreDtTm>
-      <NbOfTxs>${nbOfTxs}</NbOfTxs>
-      <CtrlSum>${ctrlSum}</CtrlSum>
-      <InitgPty>
-        <Nm>${escapeXml(config.creditorName)}</Nm>
-      </InitgPty>
-    </GrpHdr>
-    <PmtInf>
-      <PmtInfId>${escapeXml(pmtInfId)}</PmtInfId>
-      <PmtMtd>DD</PmtMtd>
-      <BtchBookg>${config.batchBooking ? "true" : "false"}</BtchBookg>
-      <NbOfTxs>${nbOfTxs}</NbOfTxs>
-      <CtrlSum>${ctrlSum}</CtrlSum>
-      <PmtTpInf>
-        <SvcLvl>
-          <Cd>SEPA</Cd>
-        </SvcLvl>
-        <LclInstrm>
-          <Cd>${escapeXml(lcl)}</Cd>
-        </LclInstrm>
-        <SeqTp>${escapeXml(seqTp)}</SeqTp>
-      </PmtTpInf>
-      <ReqdColltnDt>${escapeXml(reqdColltnDt)}</ReqdColltnDt>
-      <Cdtr>
-        <Nm>${escapeXml(config.creditorName)}</Nm>
-      </Cdtr>
-      <CdtrAcct>
-        <Id>
-          <IBAN>${escapeXml(cleanIBAN(config.creditorIBAN))}</IBAN>
-        </Id>
-      </CdtrAcct>
-      <CdtrAgt>
-        <FinInstnId>${config.creditorBIC ? `
-          <BIC>${escapeXml(config.creditorBIC.toUpperCase())}</BIC>` : `
-          <Othr><Id>NOTPROVIDED</Id></Othr>`}
-        </FinInstnId>
-      </CdtrAgt>
-      <ChrgBr>SLEV</ChrgBr>
-      <CdtrSchmeId>
-        <Id>
-          <PrvtId>
-            <Othr>
-              <Id>${escapeXml(config.creditorId)}</Id>
-              <SchmeNm>
-                <Prtry>SEPA</Prtry>
-              </SchmeNm>
-            </Othr>
-          </PrvtId>
-        </Id>
-      </CdtrSchmeId>`;
-
-  entries.forEach((entry) => {
-    xml += `
-      <DrctDbtTxInf>
-        <PmtId>
-          <EndToEndId>${escapeXml(entry.endToEndId || "NOTPROVIDED")}</EndToEndId>
-        </PmtId>
-        <InstdAmt Ccy="EUR">${entry.amount}</InstdAmt>
-        <DrctDbtTx>
-          <MndtRltdInf>
-            <MndtId>${escapeXml(entry.mandateId)}</MndtId>
-            <DtOfSgntr>${escapeXml(entry.mandateDate)}</DtOfSgntr>
-          </MndtRltdInf>
-        </DrctDbtTx>
-        <DbtrAgt>
-          <FinInstnId>${entry.bic ? `
-            <BIC>${escapeXml(entry.bic.toUpperCase())}</BIC>` : `
-            <Othr><Id>NOTPROVIDED</Id></Othr>`}
-          </FinInstnId>
-        </DbtrAgt>
-        <Dbtr>
-          <Nm>${escapeXml(entry.name)}</Nm>
-        </Dbtr>
-        <DbtrAcct>
-          <Id>
-            <IBAN>${escapeXml(cleanIBAN(entry.iban))}</IBAN>
-          </Id>
-        </DbtrAcct>
-        <RmtInf>
-          <Ustrd>${escapeXml(entry.purpose || config.defaultPurpose || "Mitgliedsbeitrag")}</Ustrd>
-        </RmtInf>
-      </DrctDbtTxInf>`;
-  });
-
-  xml += `
-    </PmtInf>
-  </CstmrDrctDbtInitn>
-</Document>`;
-
-  return xml;
-}
-
-// ─── SEPA XML Generation (pain.001.001.03 – Credit Transfer / Überweisungen) ─
-
-function generateSEPACreditTransferXML(entries, config) {
-  const msgId = generateMsgId();
-  const pmtInfId = generatePmtInfId();
-  const creDtTm = formatDateTime(new Date());
-  const nbOfTxs = entries.length;
-  const ctrlSum = entries.reduce((sum, e) => sum + parseFloat(e.amount), 0).toFixed(2);
-  const reqdExctnDt = config.executionDate || formatDateISO(new Date(Date.now() + 2 * 86400000));
-
-  let xml = `<?xml version="1.0" encoding="UTF-8"?>
-<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.001.001.03"
-          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-          xsi:schemaLocation="urn:iso:std:iso:20022:tech:xsd:pain.001.001.03 pain.001.001.03.xsd">
-  <CstmrCdtTrfInitn>
-    <GrpHdr>
-      <MsgId>${escapeXml(msgId)}</MsgId>
-      <CreDtTm>${creDtTm}</CreDtTm>
-      <NbOfTxs>${nbOfTxs}</NbOfTxs>
-      <CtrlSum>${ctrlSum}</CtrlSum>
-      <InitgPty>
-        <Nm>${escapeXml(config.creditorName)}</Nm>
-      </InitgPty>
-    </GrpHdr>
-    <PmtInf>
-      <PmtInfId>${escapeXml(pmtInfId)}</PmtInfId>
-      <PmtMtd>TRF</PmtMtd>
-      <BtchBookg>${config.batchBooking ? "true" : "false"}</BtchBookg>
-      <NbOfTxs>${nbOfTxs}</NbOfTxs>
-      <CtrlSum>${ctrlSum}</CtrlSum>
-      <PmtTpInf>
-        <SvcLvl>
-          <Cd>SEPA</Cd>
-        </SvcLvl>
-      </PmtTpInf>
-      <ReqdExctnDt>${escapeXml(reqdExctnDt)}</ReqdExctnDt>
-      <Dbtr>
-        <Nm>${escapeXml(config.creditorName)}</Nm>
-      </Dbtr>
-      <DbtrAcct>
-        <Id>
-          <IBAN>${escapeXml(cleanIBAN(config.creditorIBAN))}</IBAN>
-        </Id>
-      </DbtrAcct>
-      <DbtrAgt>
-        <FinInstnId>${config.creditorBIC ? `
-          <BIC>${escapeXml(config.creditorBIC.toUpperCase())}</BIC>` : `
-          <Othr><Id>NOTPROVIDED</Id></Othr>`}
-        </FinInstnId>
-      </DbtrAgt>
-      <ChrgBr>SLEV</ChrgBr>`;
-
-  entries.forEach((entry) => {
-    xml += `
-      <CdtTrfTxInf>
-        <PmtId>
-          <EndToEndId>${escapeXml(entry.endToEndId || "NOTPROVIDED")}</EndToEndId>
-        </PmtId>
-        <Amt>
-          <InstdAmt Ccy="EUR">${entry.amount}</InstdAmt>
-        </Amt>
-        <CdtrAgt>
-          <FinInstnId>${entry.bic ? `
-            <BIC>${escapeXml(entry.bic.toUpperCase())}</BIC>` : `
-            <Othr><Id>NOTPROVIDED</Id></Othr>`}
-          </FinInstnId>
-        </CdtrAgt>
-        <Cdtr>
-          <Nm>${escapeXml(entry.name)}</Nm>
-        </Cdtr>
-        <CdtrAcct>
-          <Id>
-            <IBAN>${escapeXml(cleanIBAN(entry.iban))}</IBAN>
-          </Id>
-        </CdtrAcct>
-        <RmtInf>
-          <Ustrd>${escapeXml(entry.purpose || config.defaultPurpose || "Zahlung")}</Ustrd>
-        </RmtInf>
-      </CdtTrfTxInf>`;
-  });
-
-  xml += `
-    </PmtInf>
-  </CstmrCdtTrfInitn>
-</Document>`;
-
-  return xml;
-}
+import {
+  cleanIBAN, validateIBAN, formatIBAN, validateBIC, validateCreditorId,
+  escapeXml, formatAmount, generateMsgId, generatePmtInfId, formatDateISO, formatDateTime,
+  PAIN_FORMATS, generateSEPAXML, generateSEPACreditTransferXML, parseCSV,
+} from "./sepa-utils.js";
 
 // ─── Column Mapping Heuristics ──────────────────────────────────────────────
 
@@ -392,6 +64,7 @@ export default function SEPAXMLGenerator() {
     creditorId: "",
     collectionDate: "",
     executionDate: "",
+    painFormat: "",
     sequenceType: "RCUR",
     localInstrument: "CORE",
     batchBooking: true,
@@ -642,6 +315,22 @@ export default function SEPAXMLGenerator() {
       color: var(--text-secondary);
       max-width: 520px;
       margin: 0 auto;
+    }
+    .header-features {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+      margin-top: 20px;
+      flex-wrap: wrap;
+    }
+    .header-feature {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--accent);
+      background: var(--accent-light);
+      padding: 6px 16px;
+      border-radius: 100px;
+      border: 1px solid rgba(45,90,39,0.15);
     }
 
     /* Steps nav */
@@ -1129,14 +818,14 @@ export default function SEPAXMLGenerator() {
           onClick={() => setXmlType("debit")}
         >
           <strong>↓ SEPA-Lastschrift</strong>
-          <span>pain.008.001.02 — Beiträge einziehen</span>
+          <span>pain.008 — Beiträge einziehen</span>
         </button>
         <button
           className={`type-btn ${xmlType === "credit" ? "selected" : ""}`}
           onClick={() => setXmlType("credit")}
         >
           <strong>↑ SEPA-Überweisung</strong>
-          <span>pain.001.001.03 — Zahlungen senden</span>
+          <span>pain.001 — Zahlungen senden</span>
         </button>
       </div>
 
@@ -1255,10 +944,13 @@ export default function SEPAXMLGenerator() {
   const renderConfig = () => {
     const ibanValid = config.creditorIBAN ? validateIBAN(config.creditorIBAN) : null;
     const bicValid = config.creditorBIC ? validateBIC(config.creditorBIC) : null;
+    const creditorIdValid = config.creditorId ? validateCreditorId(config.creditorId) : null;
+    const formats = PAIN_FORMATS[xmlType] || [];
+    const selectedFormat = config.painFormat || formats.find(f => f.recommended)?.value || formats[0]?.value;
     const canProceed =
       config.creditorName &&
       config.creditorIBAN && ibanValid &&
-      (xmlType === "credit" || config.creditorId);
+      (xmlType === "credit" || (config.creditorId && creditorIdValid !== false));
 
     return (
       <div className="card">
@@ -1270,6 +962,20 @@ export default function SEPAXMLGenerator() {
         </div>
 
         <div className="form-grid">
+          <div className="form-group full">
+            <label className="form-label">SEPA-Format</label>
+            <select
+              value={selectedFormat}
+              onChange={(e) => setConfig((c) => ({ ...c, painFormat: e.target.value }))}
+            >
+              {formats.map((f) => (
+                <option key={f.value} value={f.value}>
+                  {f.label}{f.recommended ? " ★" : ""} — {f.desc}
+                </option>
+              ))}
+            </select>
+          </div>
+
           <div className="form-group full">
             <label className="form-label">Vereinsname <span className="required">*</span></label>
             <input
@@ -1316,7 +1022,10 @@ export default function SEPAXMLGenerator() {
                 value={config.creditorId}
                 onChange={(e) => setConfig((c) => ({ ...c, creditorId: e.target.value }))}
                 placeholder="DE98ZZZ09999999999"
+                className={config.creditorId && creditorIdValid === false ? "error" : ""}
               />
+              {config.creditorId && creditorIdValid && <div className="input-valid">✓ Gläubiger-ID gültig</div>}
+              {config.creditorId && creditorIdValid === false && <div className="input-error">Gläubiger-ID ungültig (Prüfsumme)</div>}
               <div className="input-hint">Gläubiger-Identifikationsnummer der Bundesbank</div>
             </div>
           )}
@@ -1513,7 +1222,7 @@ export default function SEPAXMLGenerator() {
   const renderDownload = () => {
     const totalAmount = entries.reduce((s, e) => s + (parseFloat(e.amount) || 0), 0);
     const typeLabel = xmlType === "debit" ? "SEPA-Lastschrift" : "SEPA-Überweisung";
-    const schemaLabel = xmlType === "debit" ? "pain.008.001.02" : "pain.001.001.03";
+    const schemaLabel = config.painFormat || (xmlType === "debit" ? "pain.008.001.08" : "pain.001.001.09");
 
     return (
       <div className="card" style={{ textAlign: "center" }}>
@@ -1554,13 +1263,18 @@ export default function SEPAXMLGenerator() {
       <div className="app">
         <div className="header">
           <div className="header-badge">
-            Für Vereine & Organisationen
+            Kostenlos &middot; Keine Registrierung &middot; 100% Datenschutz
           </div>
           <h1>SEPA XML Generator</h1>
           <p>
             CSV oder Excel hochladen, Spalten zuordnen, XML für Ihre Bank erzeugen. 
             Kompatibel mit allen SEPA-fähigen Instituten.
           </p>
+          <div className="header-features">
+            <span className="header-feature">Kostenlos &amp; unbegrenzt</span>
+            <span className="header-feature">Keine Datenübertragung</span>
+            <span className="header-feature">pain.008 &amp; pain.001</span>
+          </div>
         </div>
 
         {renderStepNav()}
